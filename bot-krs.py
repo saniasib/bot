@@ -160,9 +160,25 @@ class SIAScraper:
             payload = {"add": info["course_id"]}
             headers = {"X-Requested-With": "XMLHttpRequest", "Referer": self.krs_add_page_link}
             r = self.session.post(url, data=payload, headers=headers, timeout=15)
+
             if r.status_code == 200 and "sukses" in r.text.lower():
-                # Send a separate success notification
-                success_msg = f"✅ *SUCCESS!* ✅\n\nThe course *{course['name']} (Class {course['class']})* has been added to your KRS!"
+                # 🔹 Ambil info dosen dari kuesioner
+                dosen_info = self.get_kuesioner_info(info["course_id"])
+
+                if dosen_info:
+                    success_msg = (
+                        f"✅ *SUCCESS!* ✅\n\n"
+                        f"The course *{course['name']} (Class {course['class']})* "
+                        f"has been added to your KRS!\n\n"
+                        f"👨‍🏫 Lecturer: *{dosen_info['dosen']}*"
+                    )
+                else:
+                    success_msg = (
+                        f"✅ *SUCCESS!* ✅\n\n"
+                        f"The course *{course['name']} (Class {course['class']})* "
+                        f"has been added to your KRS!"
+                    )
+
                 self.context.bot.send_message(self.chat_id, success_msg, parse_mode="Markdown")
                 return True
             else:
@@ -171,6 +187,7 @@ class SIAScraper:
         except Exception as e:
             logger.error(f"Error during course registration {course['name']}: {e}")
             return False
+
 
     # FINAL VERSION: MORE ROBUST AND ACCURATE
     # REPLACE WITH THIS FINAL FUNCTION
@@ -181,8 +198,10 @@ class SIAScraper:
 
         monitoring_list = copy.deepcopy(courses_to_monitor)
         course_statuses = {f"{c['code']}-{c['class']}": "Searching..." for c in monitoring_list}
+        check_counter = 0  # 🔹 Hitungan berapa kali sudah ngecek
 
         while monitoring_list and not user_sessions.get(self.user_id, {}).get("stop_flag", False):
+            check_counter += 1
             try:
                 page_soup = None
                 if self.get_krs_add_link():
@@ -201,7 +220,8 @@ class SIAScraper:
                         found_on_page = False
                         for row in page_soup.find_all("tr"):
                             tds = row.find_all("td")
-                            if len(tds) < 7: continue
+                            if len(tds) < 7: 
+                                continue
                             
                             row_code = tds[1].text.strip().lower()
                             row_name = tds[2].text.strip().lower()
@@ -209,11 +229,9 @@ class SIAScraper:
                             
                             # +++ NEW CODE (Fixed) +++
                             if not row.find("label", string=re.compile(r"full", re.I)):
-                                # First, find the button and make sure it exists
                                 take_button = row.find("button", class_="btn-success")
 
                                 if take_button and take_button.has_attr('onclick'):
-                                    # The button exists, now we can proceed
                                     course_statuses[course_key] = "✅ SLOT AVAILABLE!"
                                     onclick = take_button["onclick"]
                                     match = re.search(r"setkeyin\s*\(\s*'([^']+)'.*?,\s*(\d+)", onclick)
@@ -225,11 +243,8 @@ class SIAScraper:
                                         else:
                                             course_statuses[course_key] = "🔴 Failed/Full"
                                 else:
-                                    # The course isn't "full", but there's no take button.
-                                    # It's likely unavailable for another reason.
                                     course_statuses[course_key] = "🤔 Available but locked"
                             else:
-                                # This part handles the case where the "full" label IS found
                                 course_statuses[course_key] = "🔴 Full"
                                 break
                                 
@@ -239,19 +254,22 @@ class SIAScraper:
                     if registered_courses:
                         monitoring_list = [c for c in monitoring_list if c not in registered_courses]
 
-                # --- Message logic back to normal ---
-                msg_header = f"🚀 *Monitoring {len(monitoring_list)} Courses...*\n\n"
+                # --- Message logic with counter + timestamp ---
+                from datetime import datetime
+                timestamp = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+                msg_header = f"🚀 *Monitoring {len(monitoring_list)} Courses...* | Check #{check_counter}\n_Last checked: {timestamp}_\n\n"
+
                 msg_body = ""
                 for course in monitoring_list:
                     course_key = f"{course['code']}-{course['class']}"
                     status = course_statuses.get(course_key, "Searching...")
                     msg_body += f"- `{course['name']}` | Class `{course['class']}` | Status: *{status}*\n"
+
                 final_text = msg_header + msg_body + "\n_Press /stop to halt._"
                 
-                # Always try to update the message in each cycle
                 if final_text != self.last_sent_text:
                     self.send_or_edit_msg(final_text)
-                    self.last_sent_text = final_text # Remember what was just sent
+                    self.last_sent_text = final_text 
                 
                 if registered_in_this_cycle:
                     continue
@@ -271,6 +289,30 @@ class SIAScraper:
                 final_msg += "Process stopped by the user."
             self.send_or_edit_msg(final_msg)
             user_sessions.pop(self.user_id, None)
+
+    def get_kuesioner_info(self, value):
+        """Get mata kuliah info dari halaman kuesioner"""
+        try:
+            kuesioner_url = f"{self.base_url}/std/kuesioner/{value}"
+            response = self.session.get(kuesioner_url, timeout=15)
+            response.raise_for_status()
+
+            soup = BeautifulSoup(response.text, "html.parser")
+
+            mata_kuliah = soup.find("h3", class_="text-center")
+            dosen = soup.find("h4", class_="text-center")
+
+            if mata_kuliah and dosen:
+                return {
+                    "mata_kuliah": mata_kuliah.text.strip(),
+                    "dosen": dosen.text.strip()
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Error accessing kuesioner {value}: {e}")
+            return None
+
+
 
 # ==============================================================================
 # TELEGRAM BOT HANDLERS (With New Flow)
