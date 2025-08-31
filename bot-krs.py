@@ -198,7 +198,7 @@ class SIAScraper:
 
         monitoring_list = copy.deepcopy(courses_to_monitor)
         course_statuses = {f"{c['code']}-{c['class']}": "Searching..." for c in monitoring_list}
-        check_counter = 0  # 🔹 Hitungan berapa kali sudah ngecek
+        check_counter = 0
 
         while monitoring_list and not user_sessions.get(self.user_id, {}).get("stop_flag", False):
             check_counter += 1
@@ -212,49 +212,50 @@ class SIAScraper:
                         course_statuses[key] = "No KRS session"
 
                 registered_in_this_cycle = False
+                registered_courses = []
 
                 if page_soup:
-                    registered_courses = []
                     for course in monitoring_list:
                         course_key = f"{course['code']}-{course['class']}"
                         found_on_page = False
+
                         for row in page_soup.find_all("tr"):
                             tds = row.find_all("td")
-                            if len(tds) < 7: 
+                            if len(tds) < 7:
                                 continue
-                            
-                            row_code = tds[1].text.strip().lower()
-                            row_name = tds[2].text.strip().lower()
-                            row_cls = tds[6].text.strip().lower()
-                            
-                            # +++ NEW CODE (Fixed) +++
-                            if not row.find("label", string=re.compile(r"full", re.I)):
-                                take_button = row.find("button", class_="btn-success")
 
-                                if take_button and take_button.has_attr('onclick'):
-                                    course_statuses[course_key] = "✅ SLOT AVAILABLE!"
-                                    onclick = take_button["onclick"]
-                                    match = re.search(r"setkeyin\s*\(\s*'([^']+)'.*?,\s*(\d+)", onclick)
-                                    if match:
-                                        info = {"key": match.group(1), "course_id": match.group(2)}
-                                        if self.attempt_registration(info, course):
-                                            registered_courses.append(course)
-                                            registered_in_this_cycle = True
-                                        else:
-                                            course_statuses[course_key] = "🔴 Failed/Full"
+                            row_code = tds[1].text.strip().upper()
+                            row_cls = tds[6].text.strip().upper()
+
+                            # ✅ Fokus pencocokan pada kode + kelas
+                            if row_code == course['code'].upper() and row_cls == course['class'].upper():
+                                found_on_page = True
+
+                                if not row.find("label", string=re.compile(r"full", re.I)):
+                                    take_button = row.find("button", class_="btn-success")
+                                    if take_button and take_button.has_attr('onclick'):
+                                        course_statuses[course_key] = "✅ SLOT AVAILABLE!"
+                                        onclick = take_button["onclick"]
+                                        match = re.search(r"setkeyin\s*\(\s*'([^']+)'.*?,\s*(\d+)", onclick)
+                                        if match:
+                                            info = {"key": match.group(1), "course_id": match.group(2)}
+                                            if self.attempt_registration(info, course):
+                                                registered_courses.append(course)
+                                                registered_in_this_cycle = True
+                                            else:
+                                                course_statuses[course_key] = "🔴 Failed/Full"
+                                    else:
+                                        course_statuses[course_key] = "🤔 Available but locked"
                                 else:
-                                    course_statuses[course_key] = "🤔 Available but locked"
-                            else:
-                                course_statuses[course_key] = "🔴 Full"
-                                break
-                                
+                                    course_statuses[course_key] = "🔴 Full"
+
                         if not found_on_page:
                             course_statuses[course_key] = "🧐 Not found"
-                        
+
                     if registered_courses:
                         monitoring_list = [c for c in monitoring_list if c not in registered_courses]
 
-                # --- Message logic with counter + timestamp ---
+                # --- Update pesan ---
                 from datetime import datetime
                 timestamp = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
                 msg_header = f"🚀 *Monitoring {len(monitoring_list)} Courses...* | Check #{check_counter}\n_Last checked: {timestamp}_\n\n"
@@ -266,19 +267,30 @@ class SIAScraper:
                     msg_body += f"- `{course['name']}` | Class `{course['class']}` | Status: *{status}*\n"
 
                 final_text = msg_header + msg_body + "\n_Press /stop to halt._"
-                
+
                 if final_text != self.last_sent_text:
                     self.send_or_edit_msg(final_text)
-                    self.last_sent_text = final_text 
-                
+                    self.last_sent_text = final_text
+
                 if registered_in_this_cycle:
                     continue
 
             except Exception as e:
                 logger.error(f"Error in monitoring loop: {e}")
                 self.send_or_edit_msg(f"An error occurred: `{e}`. Retrying...")
-            
+
             time.sleep(interval)
+
+        # --- keluar loop ---
+        if self.user_id in user_sessions:
+            final_msg = "🏁 *Monitoring Finished.*\n\n"
+            if not monitoring_list:
+                final_msg += "All target courses have been successfully acquired."
+            else:
+                final_msg += "Process stopped by the user."
+            self.send_or_edit_msg(final_msg)
+            user_sessions.pop(self.user_id, None)
+
 
         # Exiting the loop
         if self.user_id in user_sessions:
